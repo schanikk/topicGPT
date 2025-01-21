@@ -260,7 +260,7 @@ def refine_topics(
     Returns:
     - None
     """
-    api_client = APIClient(api=api, model=model)
+    api_client = APIClient(api=api, model=model, api_key="")
     max_tokens, temperature, top_p = 1000, 0.0, 1.0
     topics_root = TopicTree().from_topic_list(topic_file, from_file=True)
     if verbose:
