@@ -9,7 +9,7 @@ import subprocess
 
 from openai import OpenAI, AzureOpenAI
 import tiktoken
-from vllm import LLM, SamplingParams
+#from vllm import LLM, SamplingParams
 import vertexai
 from vertexai.generative_models import (
     GenerationConfig,
