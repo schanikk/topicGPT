@@ -48,7 +48,7 @@ class APIClient:
 
         # Setting API key ----
         if api == "openai":
-            self.client = OpenAI(api_key=api_key)
+            self.client = OpenAI(base_url='http://localhost:11434/v1', api_key='ollama')
         elif api == "vertex":
             vertexai.init(
                 project=os.environ["VERTEX_PROJECT"],
