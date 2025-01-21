@@ -41,14 +41,14 @@ class APIClient:
     - batch_prompt: Batch prompting for vLLM API
     """
 
-    def __init__(self, api, model):
+    def __init__(self, api, model, api_key):
         self.api = api
         self.model = model
         self.client = None
 
         # Setting API key ----
         if api == "openai":
-            self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+            self.client = OpenAI(api_key=api_key)
         elif api == "vertex":
             vertexai.init(
                 project=os.environ["VERTEX_PROJECT"],
