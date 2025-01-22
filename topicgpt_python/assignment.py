@@ -88,6 +88,7 @@ def assignment(
 
         try:
             prompt = assignment_prompt.format(Document=doc, tree=seed_str)
+            print(f"PROMPT: \n {prompt}")
             response = api_client.iterative_prompt(
                 prompt, max_tokens, temperature, top_p=top_p, verbose=verbose
             )
