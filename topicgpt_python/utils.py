@@ -6,10 +6,12 @@ import pandas as pd
 from anytree import Node
 import traceback
 import subprocess
+import platform
 
 from openai import OpenAI, AzureOpenAI
 import tiktoken
-from vllm import LLM, SamplingParams
+if platform.system() == "Windows":
+    from vllm import LLM, SamplingParams
 import vertexai
 from vertexai.generative_models import (
     GenerationConfig,
@@ -41,14 +43,14 @@ class APIClient:
     - batch_prompt: Batch prompting for vLLM API
     """
 
-    def __init__(self, api, model):
+    def __init__(self, api, model, api_key=None):
         self.api = api
         self.model = model
         self.client = None
 
         # Setting API key ----
         if api == "openai":
-            self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+            self.client = OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"])
         elif api == "vertex":
             vertexai.init(
                 project=os.environ["VERTEX_PROJECT"],
@@ -56,7 +58,13 @@ class APIClient:
             )
             if model.startswith("gemini"): 
                 self.model_obj = genai.GenerativeModel(self.model)
+        elif api == "ollama":
+            self.llm = OpenAI(base_url='http://localhost:11434/v1',api_key='ollama')
         elif api == "vllm":
+            # not supported for windows
+            if platform.system() == "Windows":
+                raise ValueError("vLLM API not supported for Windows.")
+
             self.hf_token = os.environ.get("HF_TOKEN")
             self.llm = LLM(
                 self.model,
@@ -64,11 +72,11 @@ class APIClient:
             )
             self.tokenizer = self.llm.get_tokenizer()
         elif api == "gemini": 
-            genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+            genai.configure(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
             self.model_obj = genai.GenerativeModel(self.model)
         elif api == "azure": 
             self.client = AzureOpenAI(
-            api_key = os.getenv("AZURE_OPENAI_API_KEY"),  
+            api_key = api_key or os.getenv("AZURE_OPENAI_API_KEY"),  
             api_version = "2024-02-01",
             azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
             )
