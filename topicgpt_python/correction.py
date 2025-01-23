@@ -10,7 +10,7 @@ from topicgpt_python.utils import *
 
 # Disable parallel tokenizers to avoid warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-sbert = SentenceTransformer("all-MiniLM-L6-v2")
+sbert = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 
 
 def topic_parser(root_topics, df, verbose=False):
@@ -183,7 +183,7 @@ def correct_batch(
 
 
 def correct_topics(
-    api, model, data_path, prompt_path, topic_path, output_path, verbose=False
+    api, model, data_path, prompt_path, topic_path, output_path, verbose=False, api_key=None
 ):
     """
     Main function to parse, correct, and save topic assignments.
@@ -197,7 +197,7 @@ def correct_topics(
     - output_path: Path to save corrected output
     - verbose: Print verbose output
     """
-    api_client = APIClient(api=api, model=model)
+    api_client = APIClient(api=api, model=model, api_key=api_key)
     max_tokens, temperature, top_p = 1000, 0.6, 0.9
     context_len = (
         128000

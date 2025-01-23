@@ -11,7 +11,7 @@ import argparse
 import os
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-sbert = SentenceTransformer("all-MiniLM-L6-v2")
+sbert = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 
 
 def assignment(
@@ -185,7 +185,7 @@ def assignment_batch(
     return responses, prompted_docs
 
 
-def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose):
+def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose, api_key):
     """
     Assign topics to a list of documents
 
@@ -198,7 +198,7 @@ def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose):
     - topic_file (str): File to write topics to
     - verbose (bool): Whether to print out results
     """
-    api_client = APIClient(api=api, model=model)
+    api_client = APIClient(api=api, model=model, api_key=api_key)
     max_tokens, temperature, top_p = 1000, 0.0, 1.0
 
     if verbose:

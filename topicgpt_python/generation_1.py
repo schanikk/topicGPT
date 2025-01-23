@@ -10,7 +10,7 @@ from anytree import Node, RenderTree
 
 # Set environment variables
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-sbert = SentenceTransformer("all-MiniLM-L6-v2")
+sbert = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 
 
 def prompt_formatting(
@@ -151,7 +151,7 @@ def generate_topics(
 
 
 def generate_topic_lvl1(
-    api, model, data, prompt_file, seed_file, out_file, topic_file, verbose
+    api, model, data, prompt_file, seed_file, out_file, topic_file, verbose, api_key=None
 ):
     """
     Generate high-level topics
@@ -169,7 +169,7 @@ def generate_topic_lvl1(
     Returns:
     - topics_root (TopicTree): Root node of the topic tree
     """
-    api_client = APIClient(api=api, model=model)
+    api_client = APIClient(api=api, model=model, api_key=api_key)
     max_tokens, temperature, top_p = 1000, 0.0, 1.0
 
     if verbose:

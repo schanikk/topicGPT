@@ -26,7 +26,7 @@ def topic_pairs(topic_sent, all_pairs, threshold=0.5, num_pair=2):
     - list: List of all pairs prompted so far.
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+    model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2", device=device)
     embeddings = model.encode(topic_sent, convert_to_tensor=True)
     cosine_scores = util.cos_sim(embeddings, embeddings).cpu()
 
@@ -241,6 +241,7 @@ def refine_topics(
     verbose,
     remove,
     mapping_file,
+    api_key=None
 ):
     """
     Main function to refine topics by merging and updating based on API response.
@@ -260,7 +261,7 @@ def refine_topics(
     Returns:
     - None
     """
-    api_client = APIClient(api=api, model=model)
+    api_client = APIClient(api=api, model=model, api_key=api_key)
     max_tokens, temperature, top_p = 1000, 0.0, 1.0
     topics_root = TopicTree().from_topic_list(topic_file, from_file=True)
     if verbose:
