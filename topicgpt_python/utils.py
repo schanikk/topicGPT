@@ -10,7 +10,7 @@ import platform
 
 from openai import OpenAI, AzureOpenAI
 import tiktoken
-if platform.system() == "Windows":
+if platform.system() != "Windows":
     from vllm import LLM, SamplingParams
 import vertexai
 from vertexai.generative_models import (
