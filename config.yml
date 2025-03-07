@@ -63,3 +63,9 @@ assignment:
 correction:
   prompt: "prompt/correction.txt"
   output: "data/output/sample/assignment_corrected.jsonl"
+
+# --- Representation --
+# output: output of topic representation
+# ------------------
+representation:
+  output: "data/output/sample/representation.jsonl"
