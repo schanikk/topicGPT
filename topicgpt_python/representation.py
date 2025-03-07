@@ -12,7 +12,62 @@ from .ctfidf import ClassTfidfTransformer
 from sklearn.utils import Bunch
 import requests
 
-def create_topic_representations_c_tf_idf(data, out_file, stop_words: Union['English', 'German'], min_df: int = 5, max_df: float = 0.8):
+
+def remove_emojis(text):
+    emoji_pattern = re.compile("["
+        u"\U0001F600-\U0001F64F"  # emoticons
+        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+        u"\U0001F680-\U0001F6FF"  # transport & map symbols
+        u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        u"\U0001F1F2-\U0001F1F4"  # Macau flag
+        u"\U0001F1E6-\U0001F1FF"  # flags
+        u"\U0001F600-\U0001F64F"
+        u"\U00002702-\U000027B0"
+        u"\U000024C2-\U0001F251"
+        u"\U0001f926-\U0001f937"
+        u"\U0001F1F2"
+        u"\U0001F1F4"
+        u"\U0001F620"
+        u"\u200d"
+        u"\u2640-\u2642"
+        "]+", flags=re.UNICODE)
+
+    text = emoji_pattern.sub(r' ', text)
+    return text
+
+def remove_html_code(text):
+    text = re.sub(r'<[^>]*>', '', text)
+    return text
+
+def preprocessAdvanced(text, keep_emojis=False, keep_hashtags=False, keep_mentions=False, cased=True):
+    if not keep_emojis:
+        text = remove_emojis(text)
+    if not keep_hashtags:
+        text = re.sub(r'#\w*', ' ', text)
+    if not keep_mentions:
+        text = re.sub(r'@\w*', ' ', text)
+
+    # Remove URLS
+    text = re.sub(r'https?://[^\s<>"]+|www\.[^\s<>"]+', ' ', text)
+
+    # Remove Special Characters
+    text = re.sub(r'["\/\\\:\-\[\]]', ' ', text)
+
+    # Remove Extra Spaces, New Lines, Tabs
+    text = re.sub(r'\n', ' ', text)
+    text = re.sub(r'\t', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+
+    # Remove leading and trailing whitespaces
+    text = text.strip()
+
+    if not cased:
+        text = text.lower()
+
+    return text
+
+
+def create_topic_representations_c_tf_idf(data, out_file, stop_words: Union['English', 'German'], min_df: int = 5, max_df: float = 0.8, allow_multi_topics: bool = False):
     """
     Create topic representations using C-TF-IDF
 
@@ -23,10 +78,9 @@ def create_topic_representations_c_tf_idf(data, out_file, stop_words: Union['Eng
     """
     df = pd.read_json(data, lines=True)
 
-    main_pattern = re.compile(r"\[(\d)\] ([\w\s\-'\&]+)")
-
     def parse_topic_name(response):
         topics = []
+        main_pattern = re.compile(r"\[(\d)\] ([\w\s\-'\&]+)")
         for line in response.strip().split("\n"):
             line = line.strip()
             print(line)
@@ -44,20 +98,27 @@ def create_topic_representations_c_tf_idf(data, out_file, stop_words: Union['Eng
 
     df["topics"] = df["responses"].apply(parse_topic_name)
 
+    # first topic
+    if not allow_multi_topics:
+        # pick first topic
+        df["topics"] = df["topics"].apply(lambda x: x[0])
+
+    else:
+        # create seperate records / rows for each topic of a document
+        df = df.explode("topics")
+        
     # Topics to Identifier
-    topics_to_id = {}
     all_topics = df.topics.to_list()
-    all_topics = [item for sublist in all_topics for item in sublist]
+    topics_to_id = {}
     all_topics = list(set(all_topics))
 
     for i, topic in enumerate(all_topics):
         topics_to_id[topic] = i
     print(topics_to_id)
 
-    # first topic
-    df["topics"] = df["topics"].apply(lambda x: x[0])
-
     df["target"] = df["topics"].apply(lambda topic: topics_to_id[topic])
+
+    df["text"] = df["text"].apply(lambda x: preprocessAdvanced(remove_html_code(x)))
 
     dataset = Bunch(data=df["text"].to_list(), target=df["target"].to_list(), target_names=list(topics_to_id.keys()))
 
@@ -96,7 +157,7 @@ def create_topic_representations_c_tf_idf(data, out_file, stop_words: Union['Eng
         topic_words.append(words_per_class[topic])
         
 
-    return {"topics": topic_words, "dictionary": dictionary, "corpus": corpus}
+    return {"topics": topic_words, "texts": tokens, "dictionary": dictionary, "corpus": corpus}
 
 
 if __name__ == "__main__":
