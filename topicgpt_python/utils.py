@@ -60,6 +60,8 @@ class APIClient:
                 self.model_obj = genai.GenerativeModel(self.model)
         elif api == "ollama":
             self.llm = OpenAI(base_url='http://localhost:11434/v1',api_key='ollama')
+        elif api == "remote":
+            self.llm = OpenAI(api_key=os.environ["REMOTE_API_KEY"], base_url=os.environ["REMOTE_BASE_URL"])
         elif api == "vllm":
             # not supported for windows
             if platform.system() == "Windows":
@@ -158,7 +160,7 @@ class APIClient:
 
         for attempt in range(num_try):
             try:
-                if self.api in ["openai", "azure"]:
+                if self.api in ["openai", "azure", "ollama", "remote"]:
                     completion = self.client.chat.completions.create(
                         model=self.model,
                         messages=message,
