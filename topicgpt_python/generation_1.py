@@ -7,6 +7,8 @@ from sentence_transformers import SentenceTransformer, util
 import argparse
 import os
 from anytree import Node, RenderTree
+import concurrent.futures
+from threading import Lock
 
 # Set environment variables
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -87,47 +89,66 @@ def generate_topics(
     top_p,
     verbose,
     early_stop=100,  # Modify this parameter to control early stopping
+    num_workers=8,   # Number of threads for parallel processing
+    batch_size=10,   # Number of docs per batch
 ):
     """
-    Generate topics from documents using LLMs.
+    Generate topics from documents using LLMs with batched parallel processing.
     """
-    responses = []
+    responses = [None] * len(docs)
+    parsed_topics_per_doc = [None] * len(docs)
     running_dups = 0
     topic_format = regex.compile(r"^\[(\d+)\] ([\w\s]+):(.+)")
 
-    for i, doc in enumerate(tqdm(docs)):
+    def process_doc(i_doc, topics_list_snapshot):
+        i, doc = i_doc
         prompt = prompt_formatting(
             generation_prompt,
             api_client,
             doc,
             seed_file,
-            topics_list,
+            topics_list_snapshot,
             context_len,
             verbose,
         )
-
         try:
             response = api_client.iterative_prompt(
                 prompt, max_tokens, temperature, top_p=top_p, verbose=verbose
             )
-
-            # Parsing topics and organizing topic tree
             topics = [t.strip() for t in response.split("\n")]
+            return i, response, topics
+        except Exception as e:
+            traceback.print_exc()
+            return i, "Error", []
+
+    n_docs = len(docs)
+    for batch_start in range(0, n_docs, batch_size):
+        batch_end = min(batch_start + batch_size, n_docs)
+        batch_indices = list(range(batch_start, batch_end))
+        topics_list_snapshot = topics_list.copy()  # snapshot for this batch
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(process_doc, (i, docs[i]), topics_list_snapshot)
+                for i in batch_indices
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                i, response, topics = future.result()
+                responses[i] = response
+                parsed_topics_per_doc[i] = topics
+        # Sequential topic tree updates for this batch
+        for i in batch_indices:
+            topics = parsed_topics_per_doc[i]
             for t in topics:
                 if not regex.match(topic_format, t):
                     print(f"Invalid topic format: {t}. Skipping...")
                     continue
                 groups = regex.match(topic_format, t)
                 lvl, name, desc = int(groups[1]), groups[2].strip(), groups[3].strip()
-
                 if lvl != 1:
                     print(f"Lower level topics are not allowed: {t}. Skipping...")
                     continue
                 dups = topics_root.find_duplicates(name, lvl)
-
-                if (
-                    dups
-                ):  # Implement early stopping if no new topics are generated for a while
+                if dups:
                     dups[0].count += 1
                     running_dups += 1
                     if running_dups > early_stop:
@@ -136,17 +157,6 @@ def generate_topics(
                     topics_root._add_node(lvl, name, 1, desc, topics_root.root)
                     topics_list = topics_root.to_topic_list(desc=False, count=False)
                     running_dups = 0
-
-            if verbose:
-                print(f"Topics: {response}")
-                print("--------------------")
-            responses.append(response)
-
-        except Exception as e:
-            traceback.print_exc()
-            responses.append("Error")
-            break
-
     return responses, topics_list, topics_root
 
 
