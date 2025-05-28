@@ -12,6 +12,8 @@ from openai import OpenAI, AzureOpenAI
 import tiktoken
 if platform.system() != "Windows":
     from vllm import LLM, SamplingParams
+    from vllm.sampling_params import GuidedDecodingParams
+
 import vertexai
 from vertexai.generative_models import (
     GenerationConfig,
@@ -26,6 +28,7 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from sklearn import metrics
 import numpy as np
+from pydantic import BaseModel
 
 
 class APIClient:
@@ -59,9 +62,9 @@ class APIClient:
             if model.startswith("gemini"): 
                 self.model_obj = genai.GenerativeModel(self.model)
         elif api == "ollama":
-            self.llm = OpenAI(base_url='http://localhost:11434/v1',api_key='ollama')
+            self.client = OpenAI(base_url='http://localhost:11434/v1',api_key='ollama')
         elif api == "remote":
-            self.llm = OpenAI(api_key=os.environ["REMOTE_API_KEY"], base_url=os.environ["REMOTE_BASE_URL"])
+            self.client = OpenAI(api_key=os.environ["REMOTE_API_KEY"], base_url=os.environ["REMOTE_BASE_URL"])
         elif api == "vllm":
             # not supported for windows
             if platform.system() == "Windows":
@@ -289,6 +292,190 @@ class APIClient:
                             safety_settings=safety_config,
                         )
                         return response.text.strip()
+                    except:  # Avoid rate limiting issues
+                        traceback.print_exc()
+                        time.sleep(60)
+
+            except Exception as e:
+                print(f"Attempt {attempt + 1}/{num_try} failed: {e}")
+                if attempt < num_try - 1:
+                    time.sleep(60)  # avoid rate limiting issues
+                else:
+                    raise
+
+    def iterative_prompt_structured_output(
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float = 1.0,  # default value for top_p in openai
+        system_message: str = "You are a helpful assistant.",
+        num_try: int = 3,
+        response_format: BaseModel = None,
+        verbose: bool = False,
+    ):
+        """
+        Prompting API one by one with retries
+
+        Parameters:
+        - prompt: Prompt text
+        - max_tokens: Maximum token count
+        - temperature: Temperature for sampling
+        - top_p: Top p value for sampling
+        - system_message: System message
+        - num_try: Number of retries
+        - verbose: Verbose mode
+
+        Returns:
+        - response: Response text
+        """
+        # Formatting prompt
+        message = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt},
+        ]
+
+        for attempt in range(num_try):
+            try:
+                if self.api in ["openai", "azure", "ollama", "remote"]:
+                    completion = self.client.beta.chat.completions.parse(
+                        model=self.model,
+                        messages=message,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        response_format=response_format,  # Expecting a pydantic model
+                    )
+                    if verbose:
+                        print(
+                            "Prompt token usage:",
+                            completion.usage.prompt_tokens,
+                            f"~${completion.usage.prompt_tokens/1000000*5}",
+                        )
+                        print(
+                            "Response token usage:",
+                            completion.usage.completion_tokens,
+                            f"~${completion.usage.completion_tokens/1000000*15}",
+                        )
+                    print("Completion:", completion)
+                    return completion.choices[0].message.parsed
+                elif self.api == "vertex":
+                    if self.model.startswith("claude"):
+                        client = AnthropicVertex(
+                            region=os.environ["VERTEX_LOCATION"],
+                            project_id=os.environ["VERTEX_PROJECT"],
+                        )
+                        message = client.messages.create(
+                            model=self.model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            system=system_message,
+                            messages=[message[1]],
+                            response_fomrat={"type": "json_schema", "json_schema": {"name":"person_info", "strict":True, "schema": ExplainableTopics.model_json_schema()}},
+                        )
+                        message_json_str = message.model_dump_json(indent=2)
+                        message_dict = json.loads(message_json_str)
+                        
+                        response = response_format.model_validate_json(message.content[0].text)
+                        if verbose:
+                            print(
+                                "Prompt usage:",
+                                message_dict["usage"]["input_tokens"],
+                                f"${message_dict['usage']['input_tokens']/1000000*3}",
+                            )
+                            print(
+                                "Prompt usage:",
+                                message_dict["usage"]["output_tokens"],
+                                f"${message_dict['usage']['output_tokens']/1000000*15}",
+                            )
+                        return response
+                    else:
+                        config = GenerationConfig(
+                            max_output_tokens=max_tokens,
+                            temperature=temperature,
+                            top_p=top_p,
+                        )
+                        # safety config
+                        safety_config = [
+                            SafetySetting(
+                                category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                                threshold=HarmBlockThreshold.BLOCK_NONE,
+                            ),
+                            SafetySetting(
+                                category=HarmCategory.HARM_CATEGORY_HARASSMENT,
+                                threshold=HarmBlockThreshold.BLOCK_NONE,
+                            ),
+                            SafetySetting(
+                                category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                                threshold=HarmBlockThreshold.BLOCK_NONE,
+                            ),
+                            SafetySetting(
+                                category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                                threshold=HarmBlockThreshold.BLOCK_NONE,
+                            ),
+                        ]
+
+                        try:
+                            response = self.model_obj.generate_content(
+                                system_message
+                                + prompt,  # Didn't find a way to add system message in the API
+                                generation_config=config,
+                                safety_settings=safety_config,
+                                config={"response_mime_type": "application/json",
+                                        "response_schema": response_format},
+                            )
+                            return response.parsed
+                        except:  # Avoid rate limiting issues
+                            traceback.print_exc()
+                            time.sleep(60)
+
+
+                elif self.api == "vllm":
+                    guided_decoding_params = GuidedDecodingParams(jsno=response_format)
+                    sampling_params = SamplingParams(
+                        temperature=temperature,
+                        top_p=top_p,
+                        max_tokens=max_tokens,
+                        stop_token_ids=[
+                            self.tokenizer.eos_token_id,
+                            self.tokenizer.convert_tokens_to_ids("<|eot_id|>"),
+                        ],
+                        guided_decoding_params=guided_decoding_params,
+                    )
+                    final_prompt = self.tokenizer.apply_chat_template(
+                        message,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                    vllm_output = self.llm.generate([final_prompt], sampling_params)
+                    res = [output.outputs[0].text for output in vllm_output][0]
+                    return [response_format.model_validate_json(r) for r in res]
+                
+                elif self.api == "gemini":
+                    genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+                    self.model_obj = genai.GenerativeModel(self.model)
+                    config = genai.types.GenerationConfig(
+                            max_output_tokens=max_tokens,
+                            temperature=temperature,
+                            top_p=top_p,
+                        )
+                    # safety config
+                    safety_config = {
+                        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                          HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                          HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                          HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE
+                          }
+                    try:
+                        response = self.model_obj.generate_content(
+                            system_message
+                            + prompt,  # Didn't find a way to add system message in the API
+                            generation_config=config,
+                            safety_settings=safety_config,
+                            config={"response_mime_type": "application/json",
+                                    "response_schema": response_format},
+                        )
+                        return response.parsed
                     except:  # Avoid rate limiting issues
                         traceback.print_exc()
                         time.sleep(60)

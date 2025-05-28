@@ -1,10 +1,13 @@
+from typing import List, Optional, Union
 import pandas as pd
+from pydantic import Field
 import torch
 import os
 import regex
 import traceback
 import argparse
 from topicgpt_python.utils import *
+from topicgpt_python.schemas import *
 from anytree import RenderTree
 from sentence_transformers import SentenceTransformer, util
 
@@ -139,6 +142,108 @@ def merge_topics(
         )
     return responses, topics_root, orig_new
 
+def merge_topics_structured_output(
+    topics_root,
+    mapping,
+    refinement_prompt,
+    api_client,
+    temperature,
+    max_tokens,
+    top_p,
+    verbose,
+):
+    """
+    Merge similar topics based on a given refinement prompt and API client settings.
+
+    Parameters:
+    - topics_root (TopicTree): The root of the topic tree.
+    - mapping (dict): Dictionary mapping original topics to new topics.
+    - refinement_prompt (str): The prompt to use for refining topics.
+    - api_client (APIClient): The API client to use for calling the model.
+    - temperature (float): The temperature for model sampling.
+    - max_tokens (int): The maximum number of tokens to generate.
+    - top_p (float): The nucleus sampling parameter.
+    - verbose (bool): If True, prints each replacement made.
+
+    Returns:
+    - list: List of responses from the API.
+    - TopicTree: The updated topic root with merged topics.
+    - dict: The updated mapping of original topics to new topics.
+    """
+    topic_sent = topics_root.to_topic_list(desc=True, count=False)
+    new_pairs, all_pairs = topic_pairs(
+        topic_sent, all_pairs=[], threshold=0.5, num_pair=2
+    )
+    if len(new_pairs) <= 1 and verbose:
+        print("No topic pairs to be merged.")
+
+    responses, orig_new = [], mapping
+    class Topic(BaseModel):
+        """
+        Model to handle the structured output of a topic.
+        """
+        level: int = Field(description="Level of the topic in the hierarchy.")
+        name: str = Field(description="Name of the topic.")
+
+    class TopicDescribed(Topic):
+        """
+        Model to handle the structured output of an advanced topic with additional fields.
+        """
+        description: str = Field(description="Description of the topic.")
+        
+    class MergedTopic(BaseModel):
+        """
+        Model to handle the structured output of topic merging.
+        """
+        original_topic: Optional[TopicDescribed] = Field(description="Topic in which Topics are being merged.")
+        merged_topics: List[Topic] = Field(description="List of Topics that are being merged into the original topic.")
+
+    class MergeResult(BaseModel):
+        """
+        Model to handle the structured output of multiple merged topics.
+        """
+        topics: Union[List[MergedTopic], None] = Field(description="List of merged topics. Empty list if no merging was needed.", default=None)
+
+    while len(new_pairs) > 1:
+        refiner_prompt = refinement_prompt.format(Topics="\n".join(new_pairs))
+        if verbose:
+            print(f"Prompting model to merge topics:\n{refiner_prompt}")
+
+        try:
+            response = api_client.iterative_prompt_structured_output(
+                prompt=refiner_prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, response_format=MergeResult
+            )
+            responses.append(response)
+            if verbose:
+                print(f"Received response: {response}")
+            merges = response
+            if not merges.topics:
+                print("No topics to merge in the response.")
+                continue
+            for merge in merges.topics:
+                if merge.merged_topics is None or not merge.merged_topics:
+                    print("No merged topics found in the response.")
+                    continue
+                match = merge
+                print(f"Current merge: {match}")
+                if match:
+                    lvl, name, desc = match.original_topic.level, match.original_topic.name, match.original_topic.description
+                    original_topics = match.merged_topics
+                    original_topics = [(org_topic.name, org_topic.level) for org_topic in original_topics]
+
+                    topics_root = topics_root.update_tree(original_topics, name, desc)
+                    for orig in original_topics:
+                        orig_new[orig[0]] = name
+                    print(f"Updated topic tree with [{lvl}] {name}: {desc}")
+        except Exception as e:
+            print("Error when calling API!")
+            traceback.print_exc()
+
+        new_pairs, all_pairs = topic_pairs(
+            topic_sent, all_pairs, threshold=0.5, num_pair=2
+        )
+    return responses, topics_root, orig_new
+
 
 def remove_topics(topics_root, verbose, threshold=0.01):
     """
@@ -197,9 +302,18 @@ def update_generation_file(
     responses = df[response_column].tolist()
     updated_responses = []
     for response in responses:
-        updated_response = "\n".join(
-            [replace_topic_key(s, mapping, verbose) for s in response.split("\n")]
-        )
+        print(f"Processing response: {response}")
+        if isinstance(response, dict):
+            # Structured Output handling
+            updated_response = []
+            topics = ExplainableTopics.model_validate(response)
+            for topic in topics.topics:
+                updated_topic = ExplainableTopic(
+                    level=topic.level,
+                    name=replace_topic_key(topic.name, mapping, verbose),
+                    description=topic.description,
+                )
+                updated_response.append(updated_topic.model_dump())
         updated_responses.append(updated_response)
 
     df["refined_responses"] = updated_responses
@@ -241,7 +355,8 @@ def refine_topics(
     verbose,
     remove,
     mapping_file,
-    api_key=None
+    api_key=None,
+    use_structured_output=False,
 ):
     """
     Main function to refine topics by merging and updating based on API response.
@@ -279,16 +394,30 @@ def refine_topics(
     )
 
     refinement_prompt = open(prompt_file, "r").read()
-    responses, updated_topics_root, mapping = merge_topics(
-        topics_root,
-        mapping_org,
-        refinement_prompt,
-        api_client,
-        temperature,
-        max_tokens,
-        top_p,
-        verbose,
-    )
+    if use_structured_output:
+        print("Using structured output for topic refinement.")
+        responses, updated_topics_root, mapping = merge_topics_structured_output(
+            topics_root,
+            mapping_org,
+            refinement_prompt,
+            api_client,
+            temperature,
+            max_tokens,
+            top_p,
+            verbose,
+        )
+    else:
+        print("Using unstructured output for topic refinement.")
+        responses, updated_topics_root, mapping = merge_topics(
+            topics_root,
+            mapping_org,
+            refinement_prompt,
+            api_client,
+            temperature,
+            max_tokens,
+            top_p,
+            verbose,
+        )
 
     if mapping_org != mapping and verbose:
         print("Mapping updated:", mapping)

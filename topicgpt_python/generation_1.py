@@ -1,5 +1,6 @@
 import pandas as pd
 from topicgpt_python.utils import *
+from topicgpt_python.schemas import *
 from tqdm import tqdm
 import regex
 import traceback
@@ -149,9 +150,79 @@ def generate_topics(
 
     return responses, topics_list, topics_root
 
+def generate_topics_structured_output(
+    topics_root,
+    topics_list,
+    context_len,
+    docs,
+    seed_file,
+    api_client,
+    generation_prompt,
+    temperature,
+    max_tokens,
+    top_p,
+    verbose,
+    early_stop=100,  # Modify this parameter to control early stopping
+):
+    """
+    Generate topics from documents using LLMs.
+    """
+    responses = []
+    running_dups = 0
+
+    for i, doc in enumerate(tqdm(docs)):
+        prompt = prompt_formatting(
+            generation_prompt,
+            api_client,
+            doc,
+            seed_file,
+            topics_list,
+            context_len,
+            verbose,
+        )
+
+        try:
+            response = api_client.iterative_prompt_structured_output(
+                prompt, max_tokens, temperature, top_p=top_p, verbose=verbose, response_format=ExplainableTopics
+            )
+
+            # Parsing topics and organizing topic tree
+            topics = response.topics
+            for t in topics:
+                lvl, name, desc = t.level, t.name.strip(), t.description.strip()
+
+                if lvl != 1:
+                    print(f"Lower level topics are not allowed: {t}. Skipping...")
+                    continue
+                dups = topics_root.find_duplicates(name, lvl)
+
+                if (
+                    dups
+                ):  # Implement early stopping if no new topics are generated for a while
+                    dups[0].count += 1
+                    running_dups += 1
+                    if running_dups > early_stop:
+                        return responses, topics_list, topics_root
+                else:
+                    topics_root._add_node(lvl, name, 1, desc, topics_root.root)
+                    topics_list = topics_root.to_topic_list(desc=False, count=False)
+                    running_dups = 0
+
+            if verbose:
+                print(f"Topics: {response}")
+                print("--------------------")
+            responses.append(response)
+
+        except Exception as e:
+            traceback.print_exc()
+            responses.append("Error")
+            break
+
+    return responses, topics_list, topics_root
+
 
 def generate_topic_lvl1(
-    api, model, data, prompt_file, seed_file, out_file, topic_file, verbose, api_key=None
+    api, model, data, prompt_file, seed_file, out_file, topic_file, verbose, api_key=None, use_structured_output=False
 ):
     """
     Generate high-level topics
@@ -199,19 +270,34 @@ def generate_topic_lvl1(
     topics_list = topics_root.to_topic_list(desc=True, count=False)
 
     # Generate topics
-    responses, topics_list, topics_root = generate_topics(
-        topics_root,
-        topics_list,
-        context_len,
-        docs,
-        seed_file,
-        api_client,
-        generation_prompt,
-        temperature,
-        max_tokens,
-        top_p,
-        verbose,
-    )
+    if use_structured_output:
+        responses, topics_list, topics_root = generate_topics_structured_output(
+            topics_root,
+            topics_list,
+            context_len,
+            docs,
+            seed_file,
+            api_client,
+            generation_prompt,
+            temperature,
+            max_tokens,
+            top_p,
+            verbose,
+        )
+    else:
+        responses, topics_list, topics_root = generate_topics(
+            topics_root,
+            topics_list,
+            context_len,
+            docs,
+            seed_file,
+            api_client,
+            generation_prompt,
+            temperature,
+            max_tokens,
+            top_p,
+            verbose,
+        )
 
     # Save generated topics
     topics_root.to_file(topic_file)

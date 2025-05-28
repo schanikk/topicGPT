@@ -6,6 +6,7 @@ from sentence_transformers import SentenceTransformer, util
 import regex as re
 import os
 from topicgpt_python.utils import *
+from topicgpt_python.schemas import *
 
 
 # Disable parallel tokenizers to avoid warnings
@@ -44,6 +45,44 @@ def topic_parser(root_topics, df, verbose=False):
         else:
             for topic in extracted_topics:
                 if topic not in valid_topics:
+                    if verbose:
+                        print(f"Hallucinated: {topic}")
+                    hallucinated.append(i)
+                    break
+
+    if verbose:
+        print(f"Number of errors: {len(error)}")
+        print(f"Number of hallucinated topics: {len(hallucinated)}")
+    return error, hallucinated
+
+def topic_parser_structured_output(root_topics, df, verbose=False):
+    """
+    Return a list of indices of rows with errors and hallucinated topics.
+
+    Parameters:
+    - root_topics: TopicTree object
+    - df: DataFrame with 'responses' column containing topic assignments
+    - verbose: Print error and hallucinated topics
+
+    Returns:
+    - error: List of indices of rows with no topics
+    - hallucinated: List of indices of rows with hallucinated topics
+    """
+    error, hallucinated = [], []
+    valid_topics = set(root_topics.get_root_descendants_name())
+    topic_pattern = re.compile(r"\[\d\] [\w\s\-'\&]+")
+    strip_pattern = re.compile(r"^[^a-zA-Z]+|[^a-zA-Z]+$")
+
+    for i, response in enumerate(df.responses.tolist()):
+        extracted_topics = [TopicAssignment.model_validate(response)]
+
+        if not extracted_topics:
+            if verbose:
+                print(f"Error: Row {i} has no topics.")
+            error.append(i)
+        else:
+            for topic in extracted_topics:
+                if topic.name not in valid_topics:
                     if verbose:
                         print(f"Hallucinated: {topic}")
                     hallucinated.append(i)
@@ -119,6 +158,80 @@ def correct(
             df.at[i, "responses"] = "Error"
     return df
 
+def correct_structured_output(
+    api_client,
+    topics_root,
+    df,
+    correction_prompt,
+    context_len,
+    reprompt_idx,
+    temperature=1.0,
+    top_p=1.0,
+    max_tokens=1000,
+    verbose=False,
+):
+    """Return documents with assigned topics based on relevance."""
+    all_topics = "\n".join(topics_root.to_topic_list(desc=True, count=False))
+
+    class TopicAssignment(BaseModel):
+        """
+        Model for structured output of topic assignments
+        """
+        level: int
+        name: str
+        description: str
+        supporting_quote: str
+
+    for i in tqdm(reprompt_idx, desc="Correcting topics"):
+        doc = df.at[i, "prompted_docs"]
+        if (
+            api_client.estimate_token_count(doc + correction_prompt + all_topics)
+            > context_len
+        ):
+            topic_embeddings = {
+                topic: sbert.encode(topic, convert_to_tensor=True)
+                for topic in all_topics.split("\n")
+            }
+            doc_embedding = sbert.encode(doc, convert_to_tensor=True)
+            top_topics = sorted(
+                topic_embeddings,
+                key=lambda t: util.cos_sim(topic_embeddings[t], doc_embedding).cpu(),
+                reverse=True,
+            )
+
+            while (
+                api_client.estimate_token_count("\n".join(top_topics))
+                > context_len // 2
+                and len(top_topics) > 50
+            ):
+                top_topics.pop()
+            all_topics = "\n".join(top_topics)
+
+            max_doc_len = context_len - api_client.estimate_token_count(
+                correction_prompt + all_topics
+            )
+            if api_client.estimate_token_count(doc) > max_doc_len:
+                doc = api_client.truncate(doc, max_doc_len)
+
+        try:
+            response = df.at[i, "responses"]
+            responses = TopicAssignment.model_validate(response)
+            msg = f"Previously, this document was assigned to: {responses}. Please reassign it to an existing topic in the hierarchy."
+            prompt = correction_prompt.format(
+                Document=doc, tree=all_topics, Message=msg
+            )
+            result = api_client.iterative_prompt_structured_output(
+                prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, response_format=TopicAssignment
+            )
+            if verbose:
+                print(f"Document {i+1}: {result}")
+                print("-" * 20)
+            df.at[i, "responses"] = result.model_dump()
+        except Exception as e:
+            print(f"Error correcting document {i+1}: {e}")
+            traceback.print_exc()
+            df.at[i, "responses"] = "Error"
+    return df
 
 def correct_batch(
     api_client,
@@ -183,7 +296,7 @@ def correct_batch(
 
 
 def correct_topics(
-    api, model, data_path, prompt_path, topic_path, output_path, verbose=False, api_key=None
+    api, model, data_path, prompt_path, topic_path, output_path, verbose=False, api_key=None, use_structured_output=False
 ):
     """
     Main function to parse, correct, and save topic assignments.
@@ -219,7 +332,10 @@ def correct_topics(
     correction_prompt = open(prompt_path).read()
     topics_root = TopicTree().from_topic_list(topic_path, from_file=True)
 
-    error, hallucinated = topic_parser(topics_root, df, verbose)
+    if use_structured_output:
+        error, hallucinated = topic_parser_structured_output(topics_root, df, verbose)
+    else:
+        error, hallucinated = topic_parser(topics_root, df, verbose)
     reprompt_idx = error + hallucinated
 
     if len(reprompt_idx) > 0:
@@ -236,17 +352,31 @@ def correct_topics(
                 verbose=verbose,
             )
         else:
-            df = correct(
-                api_client,
-                topics_root,
-                df,
-                correction_prompt,
-                context_len,
-                reprompt_idx,
-                verbose=verbose,
-            )
+            if use_structured_output:
+                df = correct_structured_output(
+                    api_client,
+                    topics_root,
+                    df,
+                    correction_prompt,
+                    context_len,
+                    reprompt_idx,
+                    verbose=verbose,
+                )
+            else:
+                df = correct(
+                    api_client,
+                    topics_root,
+                    df,
+                    correction_prompt,
+                    context_len,
+                    reprompt_idx,
+                    verbose=verbose,
+                )
         df.to_json(output_path, lines=True, orient="records")
-        error, hallucinated = topic_parser(topics_root, df, verbose)
+        if use_structured_output:
+            error, hallucinated = topic_parser_structured_output(topics_root, df, verbose)
+        else:
+            error, hallucinated = topic_parser(topics_root, df, verbose)
         if error or hallucinated:
             print(
                 "Some errors or hallucinated topics remain. Please check the output and rerun if necessary."

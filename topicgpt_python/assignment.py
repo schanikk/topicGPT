@@ -103,6 +103,103 @@ def assignment(
         prompted_docs.append(doc)
     return res, prompted_docs
 
+def assignment_structured_output(
+    api_client,
+    topics_root,
+    docs,
+    assignment_prompt,
+    context_len,
+    temperature,
+    top_p,
+    max_tokens,
+    verbose,
+):
+    """
+    Return documents with topics assigned to them
+
+    Parameters:
+    - api_client: APIClient object
+    - topics_root: TopicTree object
+    - docs: list of documents
+    - assignment_prompt: str
+    - context_len: int
+    - temperature: float
+    - top_p: float
+    - max_tokens: int
+    - verbose: bool
+
+    Returns:
+    - res: list of responses
+    """
+    tree_str = "\n".join(topics_root.to_topic_list(desc=True, count=False))
+    prompted_docs, res = [], []
+
+    class TopicAssignment(BaseModel):
+        """
+        Model for structured output of topic assignments
+        """
+        level: int
+        name: str
+        description: str
+        supporting_quote: str
+
+    for i in trange(len(docs)):
+        doc = docs[i]
+        cos_sim = {}
+        doc_emb = sbert.encode(doc, convert_to_tensor=True)
+
+        # Include only most relevant topics such that the total length
+        # of tree_str is less than max_top_len
+        if api_client.estimate_token_count(tree_str) > context_len:
+            for top in tree_str.split("\n"):
+                top_emb = sbert.encode(top, convert_to_tensor=True)
+                cos_sim[top] = util.cos_sim(top_emb, doc_emb)
+            top_top = sorted(cos_sim, key=cos_sim.get, reverse=True)
+
+            seed_len = 0
+            seed_str = ""
+            while seed_len < context_len and len(top_top) > 0:
+                new_seed = top_top.pop(0)
+                token_count = api_client.estimate_token_count(new_seed + "\n")
+                if seed_len + token_count > context_len:
+                    break
+                else:
+                    seed_str += new_seed + "\n"
+                    seed_len += (
+                        token_count  # Update only with the new topic's token count
+                    )
+
+        else:
+            seed_str = tree_str
+
+        # Truncate document if too long
+        max_doc_len = (
+            context_len
+            - api_client.estimate_token_count(assignment_prompt)
+            - api_client.estimate_token_count(seed_str)
+        )
+        if api_client.estimate_token_count(doc) > max_doc_len:
+            print(
+                f"Truncating document from {api_client.estimate_token_count(doc)} to {max_doc_len}"
+            )
+            doc = api_client.truncating(doc, max_doc_len)
+
+        try:
+            prompt = assignment_prompt.format(Document=doc, tree=seed_str)
+            response = api_client.iterative_prompt_structured_output(
+                prompt, max_tokens, temperature, top_p=top_p, verbose=verbose, response_format=TopicAssignment
+            )
+            res.append(response)
+        except Exception as e:
+            response = "Error"
+            res.append("Error")
+            traceback.print_exc()
+
+        if verbose:
+            print(f"Response: {response}")
+            print("--------------------")
+        prompted_docs.append(doc)
+    return res, prompted_docs
 
 def assignment_batch(
     api_client,
@@ -185,7 +282,7 @@ def assignment_batch(
     return responses, prompted_docs
 
 
-def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose, api_key):
+def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose, api_key=None, use_structured_output=False):
     """
     Assign topics to a list of documents
 
@@ -239,17 +336,30 @@ def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose, 
             verbose,
         )
     else:
-        responses, prompted_docs = assignment(
-            api_client,
-            topics_root,
-            docs,
-            assignment_prompt,
-            context_len,
-            temperature,
-            top_p,
-            max_tokens,
-            verbose,
-        )
+        if use_structured_output:
+            responses, prompted_docs = assignment_structured_output(
+                api_client,
+                topics_root,
+                docs,
+                assignment_prompt,
+                context_len,
+                temperature,
+                top_p,
+                max_tokens,
+                verbose,
+            )
+        else:
+            responses, prompted_docs = assignment(
+                api_client,
+                topics_root,
+                docs,
+                assignment_prompt,
+                context_len,
+                temperature,
+                top_p,
+                max_tokens,
+                verbose,
+            )
 
     # Writing results ----
     try:

@@ -1,6 +1,8 @@
+from typing import List
 import pandas as pd
 import argparse
 from tqdm import tqdm
+from topicgpt_python.schemas import ExplainableTopics
 from topicgpt_python.utils import *
 
 
@@ -57,14 +59,22 @@ def parse_document_topics(df, topics_list):
         else df["responses"]
     )
     for line in responses:
+        if isinstance(line, dict):
+            topics = ExplainableTopics.model_validate(line)
+            topics = topics.topics
+        else:
+            topics = line.split("\n")
         line_topics = []
-        for topic in line.split("\n"):
-            match = regex.match(pattern, topic)
-            if match:
-                topic_num, topic_name = match.groups()[:2]
-                formatted_topic = f"[{topic_num}] {topic_name}"
-                if formatted_topic in topics_list:
-                    line_topics.append(formatted_topic)
+        for topic in topics:
+            if not isinstance(topic, str):
+                topic_num, topic_name = topic.level, topic.name
+            else:
+                match = regex.match(pattern, topic)
+                if match:
+                    topic_num, topic_name = match.groups()[:2]
+            formatted_topic = f"[{topic_num}] {topic_name}"
+            if formatted_topic in topics_list:
+                line_topics.append(formatted_topic)
         all_topics.append(line_topics if line_topics else ["None"])
     return all_topics
 
@@ -158,6 +168,43 @@ def parse_and_add_topics(result, current_topic, pattern, verbose, topics_root):
             print(f"Not a match: {line}")
     return names, prompt_top
 
+def parse_and_add_topics_structured_output(result, current_topic, verbose, topics_root):
+    """
+    Parse output and add topics to the tree.
+
+    Parameters:
+    - result: Output from the model
+    - current_topic: Current topic
+    - pattern: Regex pattern to match the output
+    - verbose: Enable verbose output
+    - topics_root: Topic tree object
+
+    Returns: List of topics and prompts
+    """
+    names, prompt_top = [], []
+    prev_node = None
+    top_topic_level = result.level
+    top_topic_name = result.name
+    prev_node = topics_root.find_duplicates(top_topic_name, top_topic_level)
+    if len(prev_node) > 0:
+        prev_node = prev_node[0]
+    else:
+        print(f"No previous node found for {top_topic_name} at level {top_topic_level}")
+        return names, prompt_top
+    
+    for topic in result.topics:
+        if topic:
+            lvl, name, description = topic.level, topic.name, topic.description
+            clean_name = name
+            clean_description = description
+            names.append(clean_name)
+            prompt_top.append(f"{clean_name} (Count: 0): {clean_description}")
+            if verbose:
+                print(f"{clean_name} (Count: 0): {clean_description}")
+            topics_root._add_node(2, clean_name, 1, clean_description, prev_node)
+        elif verbose:
+            print(f"Not a match: {topic}")
+    return names, prompt_top
 
 def generate_topics(
     api_client,
@@ -234,9 +281,98 @@ def generate_topics(
                 print("--------------------------------------------------")
     return res, docs
 
+def generate_topics_structured_output(
+    api_client,
+    df,
+    topics_root,
+    gen_prompt,
+    context_len,
+    max_tokens,
+    temperature,
+    top_p,
+    verbose,
+    max_topic_num=50,
+):
+    """
+    Generate subtopics for each top-level topic.
+
+    Parameters:
+    - api_client: API client object
+    - df: DataFrame containing the document responses
+    - topics_root: Topic tree object
+    - gen_prompt: Generation prompt
+    - context_len: Maximum token length for the prompt
+    - max_tokens: Maximum token length for the prompt
+    - temperature: Sampling temperature
+    - top_p: Top-p sampling threshold
+    - verbose: Enable verbose output
+    - max_topic_num: Maximum number of topics to generate
+
+    Returns: List of generated subtopics and documents
+    """
+    res, docs = [], []
+
+    class ExplainableTopic(BaseModel):
+        """
+        Model to hold the topic generation results.
+        """
+        level: int
+        name: str
+        description: str
+        documents: List[int]
+
+    class TopicHierarchy(BaseModel):
+        """
+        Model to hold a list of topics.
+        """
+        level: int
+        name: str
+        topics: List[ExplainableTopic]
+
+    for parent_topic in tqdm(filter_topics_by_count(topics_root.root.descendants, df)):
+        current_topic = f"[{parent_topic.lvl}] {parent_topic.name}"
+        if verbose:
+            print("Current topic:", current_topic)
+
+        relevant_docs = retrieve_documents(df, current_topic)
+        doc_prompt = construct_prompt(
+            gen_prompt,
+            current_topic,
+            relevant_docs,
+            max_tokens,
+            context_len,
+            api_client,
+        )
+
+        for doc in doc_prompt:
+            try:
+                prompt = gen_prompt.format(Topic=current_topic, Document=doc)
+                result = api_client.iterative_prompt_structured_output(
+                    prompt,
+                    max_tokens,
+                    temperature,
+                    top_p=top_p,
+                    system_message="You are a helpful assistant.",
+                    response_format=TopicHierarchy,
+                )
+                if verbose:
+                    print("Subtopics:", result)
+
+                names, prompt_top = parse_and_add_topics_structured_output(
+                    result, parent_topic, verbose, topics_root
+                )
+                res.append(result)
+                docs.append(doc)
+            except Exception as e:
+                res.append("Error")
+                if verbose:
+                    traceback.print_exc()
+            if verbose:
+                print("--------------------------------------------------")
+    return res, docs
 
 def generate_topic_lvl2(
-    api, model, seed_file, data, prompt_file, out_file, topic_file, verbose, api_key=None
+    api, model, seed_file, data, prompt_file, out_file, topic_file, verbose, api_key=None, use_structured_output=False
 ):
     """
     Generate subtopics for each top-level topic.
@@ -280,17 +416,30 @@ def generate_topic_lvl2(
         print("Number of remaining documents for prompting:", len(df))
 
     # Generate topics
-    res, docs = generate_topics(
-        api_client,
-        df,
-        topics_root,
-        generation_prompt,
-        128000,
-        max_tokens,
-        temperature,
-        top_p,
-        verbose,
-    )
+    if use_structured_output:
+        res, docs = generate_topics_structured_output(
+            api_client,
+            df,
+            topics_root,
+            generation_prompt,
+            128000,
+            max_tokens,
+            temperature,
+            top_p,
+            verbose,
+        )
+    else:
+        res, docs = generate_topics(
+            api_client,
+            df,
+            topics_root,
+            generation_prompt,
+            128000,
+            max_tokens,
+            temperature,
+            top_p,
+            verbose,
+        )
 
     # Write results
     topics_root.to_file(topic_file)
