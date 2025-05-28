@@ -1,6 +1,6 @@
 from typing import List, Optional, Union
 import pandas as pd
-from pydantic import Field
+from pydantic import Field, conlist
 import torch
 import os
 import regex
@@ -183,7 +183,7 @@ def merge_topics_structured_output(
         Model to handle the structured output of a topic.
         """
         level: int = Field(description="Level of the topic in the hierarchy.")
-        name: str = Field(description="Name of the topic.")
+        name: str = Field(description="Name of the topic that is being merged.")
 
     class TopicDescribed(Topic):
         """
@@ -195,14 +195,15 @@ def merge_topics_structured_output(
         """
         Model to handle the structured output of topic merging.
         """
-        original_topic: Optional[TopicDescribed] = Field(description="Topic in which Topics are being merged.")
-        merged_topics: List[Topic] = Field(description="List of Topics that are being merged into the original topic.")
+        new_topic: Optional[TopicDescribed] = Field(description="New Topic that is being created from the merge.")
+        merged_topics: conlist(Topic, min_length=2) = Field(..., description="List of Topics that are being mered into the new Topic.")
+                    
 
     class MergeResult(BaseModel):
         """
         Model to handle the structured output of multiple merged topics.
         """
-        topics: Union[List[MergedTopic], None] = Field(description="List of merged topics. Empty list if no merging was needed.", default=None)
+        merged_topics: Union[List[MergedTopic], None] = Field(description="List of merged topics. Empty list if no merging was needed.", default_factory=list)
 
     while len(new_pairs) > 1:
         refiner_prompt = refinement_prompt.format(Topics="\n".join(new_pairs))
@@ -217,17 +218,14 @@ def merge_topics_structured_output(
             if verbose:
                 print(f"Received response: {response}")
             merges = response
-            if not merges.topics:
+            if not merges.merged_topics:
                 print("No topics to merge in the response.")
                 continue
-            for merge in merges.topics:
-                if merge.merged_topics is None or not merge.merged_topics:
-                    print("No merged topics found in the response.")
-                    continue
+            for merge in merges.merged_topics:
                 match = merge
                 print(f"Current merge: {match}")
                 if match:
-                    lvl, name, desc = match.original_topic.level, match.original_topic.name, match.original_topic.description
+                    lvl, name, desc = match.new_topic.level, match.new_topic.name, match.new_topic.description
                     original_topics = match.merged_topics
                     original_topics = [(org_topic.name, org_topic.level) for org_topic in original_topics]
 

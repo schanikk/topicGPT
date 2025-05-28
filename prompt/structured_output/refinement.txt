@@ -1,0 +1,89 @@
+# Topic Merging Prompt (Simplified)
+
+You will receive a list of topics that belong to the same level of a topic hierarchy. Your task is to identify and merge topics that are paraphrases or near duplicates of one another.
+
+**Instructions:**
+- Return only the topics that were actually merged
+- If no merging is needed, return an empty `merged_topics` array
+- Each merged topic should contain the new combined topic and the original topics that were merged
+
+**Response Format:**
+```json
+{{
+  "merged_topics": [
+    // Only include entries if topics were actually merged
+    {{
+      "merged_topic": {{
+        "level": 1,
+        "name": "New Combined Topic Name",
+        "description": "Description covering the merged concepts"
+      }},
+      "original_topics": [
+        {{
+          "level": 1,
+          "name": "First Original Topic",
+          "description": "Original description"
+        }},
+        {{
+          "level": 1,
+          "name": "Second Original Topic", 
+          "description": "Original description"
+        }}
+      ]
+    }}
+  ]
+}}
+```
+
+## Examples:
+
+**Example 1: Merging Required**
+Input:
+- [1] Employer Taxes: Mentions taxation policy for employer
+- [1] Employment Tax Reporting: Mentions reporting requirements for employer  
+- [1] Immigration: Mentions policies and laws on immigration
+
+Response:
+```json
+{{
+  "merged_topics": [
+    {{
+      "merged_topic": {{
+        "level": 1,
+        "name": "Employment Taxes",
+        "description": "Covers taxation policies and reporting requirements for employers"
+      }},
+      "original_topics": [
+        {{
+          "level": 1,
+          "name": "Employer Taxes", 
+          "description": "Mentions taxation policy for employer"
+        }},
+        {{
+          "level": 1,
+          "name": "Employment Tax Reporting",
+          "description": "Mentions reporting requirements for employer"
+        }}
+      ]
+    }}
+  ]
+}}
+```
+
+**Example 2: No Merging Needed**
+Input:
+- [1] Mathematics: Mathematical concepts and theories
+- [1] History: Historical events and periods  
+- [1] Literature: Literary works and analysis
+
+Response:
+```json
+{{
+  "merged_topics": []
+}}
+```
+
+## Topic List:
+{Topics}
+
+Analyze the topics and return only the merged topics following the format above.
