@@ -6,6 +6,7 @@ import traceback
 import argparse
 from topicgpt_python.utils import *
 from anytree import RenderTree
+import concurrent.futures
 from sentence_transformers import SentenceTransformer, util
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -95,18 +96,35 @@ def merge_topics(
     )
     pattern_original = regex.compile(r"\[(\d+)\]([\w\s\-',]+),?")
 
-    while len(new_pairs) > 1:
-        refiner_prompt = refinement_prompt.format(Topics="\n".join(new_pairs))
+    def process_merge_prompt(pair_group):
+        refiner_prompt = refinement_prompt.format(Topics="\n".join(pair_group))
         if verbose:
             print(f"Prompting model to merge topics:\n{refiner_prompt}")
-
         try:
             response = api_client.iterative_prompt(
                 refiner_prompt, max_tokens, temperature, top_p
             )
+            return response
+        except Exception as e:
+            print("Error when calling API!")
+            traceback.print_exc()
+            return None
+
+    while len(new_pairs) > 1:
+
+        pair_groups = [new_pairs[i:i+2] for i in range(0, len(new_pairs), 2)]
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures_to_pair = {
+                executor.submit(process_merge_prompt, pair_group): pair_group for pair_group in pair_groups
+            }
+
+        for future in concurrent.futures.as_completed(futures_to_pair):
+            response = future.result()
+            if response is None:
+                continue
             responses.append(response)
             merges = response.split("\n")
-
             for merge in merges:
                 match = pattern_topic.match(merge.strip())
                 if match:
@@ -130,9 +148,6 @@ def merge_topics(
                     for orig in original_topics:
                         orig_new[orig[0]] = name
                     print(f"Updated topic tree with [{lvl}] {name}: {desc}")
-        except Exception as e:
-            print("Error when calling API!")
-            traceback.print_exc()
 
         new_pairs, all_pairs = topic_pairs(
             topic_sent, all_pairs, threshold=0.5, num_pair=2

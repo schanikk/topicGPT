@@ -1,6 +1,6 @@
 import pandas as pd
 from topicgpt_python.utils import *
-
+import concurrent.futures
 import openai
 import numpy as np
 from tqdm import trange
@@ -24,6 +24,7 @@ def assignment(
     top_p,
     max_tokens,
     verbose,
+    num_workers=10,
 ):
     """
     Return documents with topics assigned to them
@@ -38,15 +39,15 @@ def assignment(
     - top_p: float
     - max_tokens: int
     - verbose: bool
+    - num_workers: int, number of threads to use for processing, should match rate limit of the API
 
     Returns:
     - res: list of responses
     """
     tree_str = "\n".join(topics_root.to_topic_list(desc=True, count=False))
-    prompted_docs, res = [], []
+    prompted_docs, res = [None] * len(docs), [None] * len(docs)
 
-    for i in trange(len(docs)):
-        doc = docs[i]
+    def process_doc(doc):
         cos_sim = {}
         doc_emb = sbert.encode(doc, convert_to_tensor=True)
 
@@ -91,18 +92,31 @@ def assignment(
             response = api_client.iterative_prompt(
                 prompt, max_tokens, temperature, top_p=top_p, verbose=verbose
             )
-            res.append(response)
         except Exception as e:
             response = "Error"
-            res.append("Error")
             traceback.print_exc()
 
         if verbose:
             print(f"Response: {response}")
             print("--------------------")
-        prompted_docs.append(doc)
-    return res, prompted_docs
 
+        return response, doc
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        future_to_idx = {executor.submit(process_doc, docs[i]): i for i in range(len(docs))}
+        for future in concurrent.futures.as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                response, doc = future.result()
+                res[idx] = response
+                prompted_docs[idx] = doc
+            except Exception as exc:
+                res[idx] = "Error"
+                prompted_docs[idx] = docs[idx]
+                if verbose:
+                    print(f"Doc {idx} generated an exception: {exc}")
+
+    return res, prompted_docs
 
 def assignment_batch(
     api_client,
@@ -185,7 +199,7 @@ def assignment_batch(
     return responses, prompted_docs
 
 
-def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose, api_key):
+def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose, api_key=None):
     """
     Assign topics to a list of documents
 

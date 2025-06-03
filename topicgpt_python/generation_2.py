@@ -1,7 +1,16 @@
 import pandas as pd
 import argparse
+import concurrent.futures
 from tqdm import tqdm
 from topicgpt_python.utils import *
+
+
+def batch_iterable(iterable, batch_size):
+    """
+    Yield successive batches from iterable of size batch_size.
+    """
+    for i in range(0, len(iterable), batch_size):
+        yield iterable[i:i + batch_size]
 
 
 def construct_document(api_client, docs, context_len):
@@ -190,14 +199,29 @@ def generate_topics(
     """
     res, docs = [], []
     main_pattern = regex.compile(
-        r"^\[(\d+)\] ([\w\s\-'\&,]+)(\(Document(?:s)?: ((?:(?:\d+)(?:(?:, )?)|-)+)\)([:\-\w\s,.\n'\&]*?))?$"
+        r"^\[(\d+)\] ([\w\s\-\'\&,]+)(\(Document(?:s)?: ((?:(?:\d+)(?:(?:, )?)|-)+)\)([:\-\w\s,.\n'\&]*?))?$"
     )
+    def process_doc(doc, current_topic, parent_topic):
+        try:
+            prompt = gen_prompt.format(Topic=current_topic, Document=doc)
+            result = api_client.iterative_prompt(
+                prompt,
+                max_tokens,
+                temperature,
+                top_p=top_p,
+                system_message="You are a helpful assistant.",
+            )
+            return result, doc
+        except Exception as e:
+            if verbose:
+                print(f"Error processing document: {doc}")
+                traceback.print_exc()
+            return "Error", doc
 
-    for parent_topic in tqdm(filter_topics_by_count(topics_root.root.descendants, df)):
+    def process_topic(parent_topic):
         current_topic = f"[{parent_topic.lvl}] {parent_topic.name}"
         if verbose:
             print("Current topic:", current_topic)
-
         relevant_docs = retrieve_documents(df, current_topic)
         doc_prompt = construct_prompt(
             gen_prompt,
@@ -207,31 +231,29 @@ def generate_topics(
             context_len,
             api_client,
         )
-
+        topic_results, topic_docs = [], []
         for doc in doc_prompt:
-            try:
-                prompt = gen_prompt.format(Topic=current_topic, Document=doc)
-                result = api_client.iterative_prompt(
-                    prompt,
-                    max_tokens,
-                    temperature,
-                    top_p=top_p,
-                    system_message="You are a helpful assistant.",
-                )
-                if verbose:
-                    print("Subtopics:", result)
-
-                names, prompt_top = parse_and_add_topics(
-                    result, parent_topic, main_pattern, verbose, topics_root
-                )
-                res.append(result)
-                docs.append(doc)
-            except Exception as e:
-                res.append("Error")
-                if verbose:
-                    traceback.print_exc()
+            result, doc = process_doc(doc, current_topic, parent_topic)
+            names, prompt_top = parse_and_add_topics(
+                result, parent_topic, main_pattern, verbose, topics_root
+            )
+            topic_results.append(result)
+            topic_docs.append(doc)
             if verbose:
                 print("--------------------------------------------------")
+        return topic_results, topic_docs
+
+    # Batching logic
+    all_topics = filter_topics_by_count(topics_root.root.descendants, df)
+    batch_size = 4  # You can adjust this batch size as needed
+    for batch in batch_iterable(all_topics, batch_size):
+        with concurrent.futures.ThreadPoolExecutor() as topic_executor:
+            topic_futures = [topic_executor.submit(process_topic, parent_topic) for parent_topic in batch]
+            for topic_future in concurrent.futures.as_completed(topic_futures):
+                topic_results, topic_docs = topic_future.result()
+                res.extend(topic_results)
+                docs.extend(topic_docs)
+
     return res, docs
 
 
