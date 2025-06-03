@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Callable, Union
 import pandas as pd
 import argparse
 import traceback
@@ -67,15 +67,22 @@ def preprocessAdvanced(text, keep_emojis=False, keep_hashtags=False, keep_mentio
     return text
 
 
-def create_topic_representations_c_tf_idf(data, out_file, stop_words: Union['English', 'German'], min_df: int = 5, max_df: float = 0.8, allow_multi_topics: bool = False):
+def create_topic_representations_c_tf_idf(data, out_file, stop_words: Union['English', 'German'], min_df: int = 5, max_df: float = 0.8, allow_multi_topics: bool = False, preprocess_fn: Callable[[str], str] = None):
     """
     Create topic representations using C-TF-IDF
 
     Parameters:
     - data: DataFrame
     - out_file: str
-    - topic_file: str
+    - stop_words: 'English' or 'German'
+    - min_df: int, minimum document frequency
+    - max_df: float, maximum document frequency
+    - allow_multi_topics: bool, whether to allow multiple topics per document
+    - preprocess_fn: Callable, function to preprocess text data
     """
+
+    preprocess_fn = preprocess_fn or ( lambda x: preprocessAdvanced(remove_html_code(x)) )
+
     df = pd.read_json(data, lines=True)
 
     def parse_topic_name(response):
@@ -118,7 +125,7 @@ def create_topic_representations_c_tf_idf(data, out_file, stop_words: Union['Eng
 
     df["target"] = df["topics"].apply(lambda topic: topics_to_id[topic])
 
-    df["text"] = df["text"].apply(lambda x: preprocessAdvanced(remove_html_code(x)))
+    df["text"] = df["text"].apply(lambda x: preprocess_fn(x))
 
     dataset = Bunch(data=df["text"].to_list(), target=df["target"].to_list(), target_names=list(topics_to_id.keys()))
 
