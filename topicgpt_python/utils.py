@@ -59,9 +59,9 @@ class APIClient:
             if model.startswith("gemini"): 
                 self.model_obj = genai.GenerativeModel(self.model)
         elif api == "ollama":
-            self.llm = OpenAI(base_url='http://localhost:11434/v1',api_key='ollama')
+            self.client = OpenAI(base_url='http://localhost:11434/v1',api_key='ollama')
         elif api == "remote":
-            self.llm = OpenAI(api_key=os.environ["REMOTE_API_KEY"], base_url=os.environ["REMOTE_BASE_URL"])
+            self.client = OpenAI(api_key=os.environ["REMOTE_API_KEY"], base_url=os.environ["REMOTE_BASE_URL"])
         elif api == "vllm":
             # not supported for windows
             if platform.system() == "Windows":
