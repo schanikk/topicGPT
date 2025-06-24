@@ -241,7 +241,8 @@ def refine_topics(
     verbose,
     remove,
     mapping_file,
-    api_key=None
+    api_key=None,
+    use_basic_auth=False,
 ):
     """
     Main function to refine topics by merging and updating based on API response.
@@ -261,7 +262,7 @@ def refine_topics(
     Returns:
     - None
     """
-    api_client = APIClient(api=api, model=model, api_key=api_key)
+    api_client = APIClient(api=api, model=model, api_key=api_key, use_basic_auth=use_basic_auth)
     max_tokens, temperature, top_p = 1000, 0.0, 1.0
     topics_root = TopicTree().from_topic_list(topic_file, from_file=True)
     if verbose:

@@ -43,10 +43,15 @@ class APIClient:
     - batch_prompt: Batch prompting for vLLM API
     """
 
-    def __init__(self, api, model, api_key=None):
+    def __init__(self, api, model, api_key=None, use_basic_auth=False):
         self.api = api
         self.model = model
         self.client = None
+
+        if use_basic_auth and api != "remote":
+            raise ValueError(
+                "Basic auth is only supported for remote API. Set use_basic_auth=False."
+            )
 
         # Setting API key ----
         if api == "openai":
@@ -61,7 +66,15 @@ class APIClient:
         elif api == "ollama":
             self.client = OpenAI(base_url='http://localhost:11434/v1',api_key='ollama')
         elif api == "remote":
-            self.client = OpenAI(api_key=os.environ["REMOTE_API_KEY"], base_url=os.environ["REMOTE_BASE_URL"])
+            if use_basic_auth:
+                self.client = OpenAI(
+                    api_key=api_key or os.environ["REMOTE_API_KEY"],
+                    base_url=os.environ["REMOTE_BASE_URL"],
+                    default_headers={
+                        "Authorization": f"Basic {os.environ['REMOTE_API_KEY']}"}
+                )
+            else:
+                self.client = OpenAI(api_key=os.environ["REMOTE_API_KEY"], base_url=os.environ["REMOTE_BASE_URL"])
         elif api == "vllm":
             # not supported for windows
             if platform.system() == "Windows":

@@ -185,7 +185,7 @@ def assignment_batch(
     return responses, prompted_docs
 
 
-def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose, api_key):
+def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose, api_key=None, use_basic_auth=False):
     """
     Assign topics to a list of documents
 
@@ -198,7 +198,7 @@ def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose, 
     - topic_file (str): File to write topics to
     - verbose (bool): Whether to print out results
     """
-    api_client = APIClient(api=api, model=model, api_key=api_key)
+    api_client = APIClient(api=api, model=model, api_key=api_key, use_basic_auth=use_basic_auth)
     max_tokens, temperature, top_p = 1000, 0.0, 1.0
 
     if verbose:

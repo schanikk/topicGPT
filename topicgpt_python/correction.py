@@ -183,7 +183,7 @@ def correct_batch(
 
 
 def correct_topics(
-    api, model, data_path, prompt_path, topic_path, output_path, verbose=False, api_key=None
+    api, model, data_path, prompt_path, topic_path, output_path, verbose=False, api_key=None, use_basic_auth=False
 ):
     """
     Main function to parse, correct, and save topic assignments.
@@ -197,7 +197,7 @@ def correct_topics(
     - output_path: Path to save corrected output
     - verbose: Print verbose output
     """
-    api_client = APIClient(api=api, model=model, api_key=api_key)
+    api_client = APIClient(api=api, model=model, api_key=api_key, use_basic_auth=use_basic_auth)
     max_tokens, temperature, top_p = 1000, 0.6, 0.9
     context_len = (
         128000

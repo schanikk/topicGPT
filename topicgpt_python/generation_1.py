@@ -151,7 +151,7 @@ def generate_topics(
 
 
 def generate_topic_lvl1(
-    api, model, data, prompt_file, seed_file, out_file, topic_file, verbose, api_key=None
+    api, model, data, prompt_file, seed_file, out_file, topic_file, verbose, api_key=None, use_basic_auth=False
 ):
     """
     Generate high-level topics
@@ -169,7 +169,7 @@ def generate_topic_lvl1(
     Returns:
     - topics_root (TopicTree): Root node of the topic tree
     """
-    api_client = APIClient(api=api, model=model, api_key=api_key)
+    api_client = APIClient(api=api, model=model, api_key=api_key, use_basic_auth=use_basic_auth)
     max_tokens, temperature, top_p = 1000, 0.0, 1.0
 
     if verbose:
