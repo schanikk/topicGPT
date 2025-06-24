@@ -1,4 +1,5 @@
 import os
+import random
 import regex
 import json
 import time
@@ -171,6 +172,10 @@ class APIClient:
             {"role": "user", "content": prompt},
         ]
 
+        # Variables for Exponential backoff
+        backoff_base = 1.5
+        backoff_max = 60
+
         for attempt in range(num_try):
             try:
                 if self.api in ["openai", "azure", "ollama", "remote"]:
@@ -309,7 +314,10 @@ class APIClient:
             except Exception as e:
                 print(f"Attempt {attempt + 1}/{num_try} failed: {e}")
                 if attempt < num_try - 1:
-                    time.sleep(60)  # avoid rate limiting issues
+                    # Exponential Backoff
+                    delay = min(backoff_max, backoff_base * (2**(attempt -1)))
+                    delay *= random.uniform(0.8, 1.2)
+                    time.sleep(delay)  # avoid rate limiting issues
                 else:
                     raise
 
