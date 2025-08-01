@@ -117,9 +117,9 @@ class ClassTfidfTransformer(TfidfTransformer):
 
 
 
-# class CTFIDFVectorizer(TfidfTransformer):
+# class ClassTfidfTransformer(TfidfTransformer):
 #     def __init__(self, *args, **kwargs):
-#         super(CTFIDFVectorizer, self).__init__(*args, **kwargs)
+#         super(ClassTfidfTransformer, self).__init__(*args, **kwargs)
 #         self._idf_diag = None
 
 #     def fit(self, X: sp.csr_matrix, n_samples: int):
