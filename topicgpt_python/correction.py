@@ -1,3 +1,6 @@
+import concurrent.futures
+import threading
+import concurrent
 import pandas as pd
 import argparse
 import traceback
@@ -10,7 +13,7 @@ from topicgpt_python.utils import *
 
 # Disable parallel tokenizers to avoid warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-sbert = SentenceTransformer("all-MiniLM-L6-v2")
+sbert = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 
 
 def topic_parser(root_topics, df, verbose=False):
@@ -66,27 +69,32 @@ def correct(
     top_p=1.0,
     max_tokens=1000,
     verbose=False,
+    max_workers=8,
 ):
     """Return documents with assigned topics based on relevance."""
     all_topics = "\n".join(topics_root.to_topic_list(desc=True, count=False))
+    sema = threading.Semaphore(max_workers)
 
-    for i in tqdm(reprompt_idx, desc="Correcting topics"):
-        doc = df.at[i, "prompted_docs"]
+    prompted_docs = df["prompted_docs"].tolist()
+    previous_responses = df["responses"].tolist()
+
+    def _worker(i: int, all_topics: str):
+        doc = prompted_docs[i]
+        tree_str = all_topics
         if (
             api_client.estimate_token_count(doc + correction_prompt + all_topics)
             > context_len
         ):
+            doc_emb = sbert.encode(doc, convert_to_tensor=True)
             topic_embeddings = {
                 topic: sbert.encode(topic, convert_to_tensor=True)
-                for topic in all_topics.split("\n")
+                for topic in tree_str.split("\n")
             }
-            doc_embedding = sbert.encode(doc, convert_to_tensor=True)
             top_topics = sorted(
                 topic_embeddings,
-                key=lambda t: util.cos_sim(topic_embeddings[t], doc_embedding).cpu(),
+                key=lambda t: util.cos_sim(topic_embeddings[t], doc_emb).cpu(),
                 reverse=True,
             )
-
             while (
                 api_client.estimate_token_count("\n".join(top_topics))
                 > context_len // 2
@@ -101,22 +109,36 @@ def correct(
             if api_client.estimate_token_count(doc) > max_doc_len:
                 doc = api_client.truncate(doc, max_doc_len)
 
+        msg = f"Previously, this document was assigned to: {previous_responses[i]}. Please reassign it to an existing topic in the hierarchy."
+        prompt = correction_prompt.format(
+            Document=doc, tree=all_topics, Message=msg
+        )
+
         try:
-            msg = f"Previously, this document was assigned to: {df.at[i, 'responses']}. Please reassign it to an existing topic in the hierarchy."
-            prompt = correction_prompt.format(
-                Document=doc, tree=all_topics, Message=msg
-            )
-            result = api_client.iterative_prompt(
-                prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p
-            )
-            if verbose:
-                print(f"Document {i+1}: {result}")
-                print("-" * 20)
-            df.at[i, "responses"] = result
+            with sema:
+                response = api_client.iterative_prompt(
+                    prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p
+                )
         except Exception as e:
             print(f"Error correcting document {i+1}: {e}")
             traceback.print_exc()
-            df.at[i, "responses"] = "Error"
+            response = "Error"
+
+        
+        if verbose:
+            print(f"Document {i+1}: {response}")
+            print("-" * 20)
+        return i, response
+
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor, \
+        tqdm(total=len(reprompt_idx), desc="Correcting topics") as pbar:
+        futures = {executor.submit(_worker, idx, all_topics): idx for idx in reprompt_idx}
+
+        for fut in concurrent.futures.as_completed(futures):
+            i, resp = fut.result()
+            df.at[i, "response"] = resp
+            pbar.update()
     return df
 
 
@@ -183,7 +205,7 @@ def correct_batch(
 
 
 def correct_topics(
-    api, model, data_path, prompt_path, topic_path, output_path, verbose=False
+    api, model, data_path, prompt_path, topic_path, output_path, verbose=False, api_key=None, use_basic_auth=False, max_workers=8
 ):
     """
     Main function to parse, correct, and save topic assignments.
@@ -197,7 +219,7 @@ def correct_topics(
     - output_path: Path to save corrected output
     - verbose: Print verbose output
     """
-    api_client = APIClient(api=api, model=model)
+    api_client = APIClient(api=api, model=model, api_key=api_key, use_basic_auth=use_basic_auth)
     max_tokens, temperature, top_p = 1000, 0.6, 0.9
     context_len = (
         128000
@@ -244,6 +266,7 @@ def correct_topics(
                 context_len,
                 reprompt_idx,
                 verbose=verbose,
+                max_workers=8
             )
         df.to_json(output_path, lines=True, orient="records")
         error, hallucinated = topic_parser(topics_root, df, verbose)

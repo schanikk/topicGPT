@@ -1,4 +1,5 @@
 import os
+import random
 import regex
 import json
 import time
@@ -6,10 +7,12 @@ import pandas as pd
 from anytree import Node
 import traceback
 import subprocess
+import platform
 
 from openai import OpenAI, AzureOpenAI
 import tiktoken
-from vllm import LLM, SamplingParams
+if platform.system() != "Windows":
+    from vllm import LLM, SamplingParams
 import vertexai
 from vertexai.generative_models import (
     GenerationConfig,
@@ -41,14 +44,19 @@ class APIClient:
     - batch_prompt: Batch prompting for vLLM API
     """
 
-    def __init__(self, api, model):
+    def __init__(self, api, model, api_key=None, use_basic_auth=False):
         self.api = api
         self.model = model
         self.client = None
 
+        if use_basic_auth and api != "remote":
+            raise ValueError(
+                "Basic auth is only supported for remote API. Set use_basic_auth=False."
+            )
+
         # Setting API key ----
         if api == "openai":
-            self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+            self.client = OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"])
         elif api == "vertex":
             vertexai.init(
                 project=os.environ["VERTEX_PROJECT"],
@@ -56,7 +64,23 @@ class APIClient:
             )
             if model.startswith("gemini"): 
                 self.model_obj = genai.GenerativeModel(self.model)
+        elif api == "ollama":
+            self.client = OpenAI(base_url='http://localhost:11434/v1',api_key='ollama')
+        elif api == "remote":
+            if use_basic_auth:
+                self.client = OpenAI(
+                    api_key=api_key or os.environ["REMOTE_API_KEY"],
+                    base_url=os.environ["REMOTE_BASE_URL"],
+                    default_headers={
+                        "Authorization": f"Basic {os.environ['REMOTE_API_KEY']}"}
+                )
+            else:
+                self.client = OpenAI(api_key=os.environ["REMOTE_API_KEY"], base_url=os.environ["REMOTE_BASE_URL"])
         elif api == "vllm":
+            # not supported for windows
+            if platform.system() == "Windows":
+                raise ValueError("vLLM API not supported for Windows.")
+
             self.hf_token = os.environ.get("HF_TOKEN")
             self.llm = LLM(
                 self.model,
@@ -64,11 +88,11 @@ class APIClient:
             )
             self.tokenizer = self.llm.get_tokenizer()
         elif api == "gemini": 
-            genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+            genai.configure(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
             self.model_obj = genai.GenerativeModel(self.model)
         elif api == "azure": 
             self.client = AzureOpenAI(
-            api_key = os.getenv("AZURE_OPENAI_API_KEY"),  
+            api_key = api_key or os.getenv("AZURE_OPENAI_API_KEY"),  
             api_version = "2024-02-01",
             azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
             )
@@ -148,9 +172,13 @@ class APIClient:
             {"role": "user", "content": prompt},
         ]
 
+        # Variables for Exponential backoff
+        backoff_base = 1.5
+        backoff_max = 60
+
         for attempt in range(num_try):
             try:
-                if self.api in ["openai", "azure"]:
+                if self.api in ["openai", "azure", "ollama", "remote"]:
                     completion = self.client.chat.completions.create(
                         model=self.model,
                         messages=message,
@@ -286,7 +314,10 @@ class APIClient:
             except Exception as e:
                 print(f"Attempt {attempt + 1}/{num_try} failed: {e}")
                 if attempt < num_try - 1:
-                    time.sleep(60)  # avoid rate limiting issues
+                    # Exponential Backoff
+                    delay = min(backoff_max, backoff_base * (2**(attempt -1)))
+                    delay *= random.uniform(0.8, 1.2)
+                    time.sleep(delay)  # avoid rate limiting issues
                 else:
                     raise
 

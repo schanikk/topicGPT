@@ -1,3 +1,4 @@
+import concurrent
 import pandas as pd
 from topicgpt_python.utils import *
 from tqdm import tqdm
@@ -10,7 +11,7 @@ from anytree import Node, RenderTree
 
 # Set environment variables
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-sbert = SentenceTransformer("all-MiniLM-L6-v2")
+sbert = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 
 
 def prompt_formatting(
@@ -86,72 +87,102 @@ def generate_topics(
     max_tokens,
     top_p,
     verbose,
-    early_stop=100,  # Modify this parameter to control early stopping
+    early_stop=250,  # Modify this parameter to control early stopping
+    max_workers=8,  # Number of threads to use for parallel processing
+    batch_size=8,  # Number of documents to process in each batch
 ):
     """
     Generate topics from documents using LLMs.
     """
-    responses = []
-    running_dups = 0
-    topic_format = regex.compile(r"^\[(\d+)\] ([\w\s]+):(.+)")
 
-    for i, doc in enumerate(tqdm(docs)):
-        prompt = prompt_formatting(
-            generation_prompt,
-            api_client,
-            doc,
-            seed_file,
-            topics_list,
-            context_len,
-            verbose,
-        )
-
+    def process_single_doc(doc_index, doc, generation_prompt, api_client, seed_file, topics_list, context_len, temperature, max_tokens, top_p, verbose):
+        """
+        Process a single document to generate topics.
+        This function is thread-safe and can be run in parallel.
+        """
         try:
+            prompt = prompt_formatting(
+                generation_prompt,
+                api_client,
+                doc,
+                seed_file,
+                topics_list,
+                context_len,
+                verbose,
+            )
             response = api_client.iterative_prompt(
                 prompt, max_tokens, temperature, top_p=top_p, verbose=verbose
             )
 
             # Parsing topics and organizing topic tree
             topics = [t.strip() for t in response.split("\n")]
+            
+            topic_format = regex.compile(r"^\[(\d+)\] ([\w\s]+):(.+)")
+            parsed_topics = []
             for t in topics:
                 if not regex.match(topic_format, t):
                     print(f"Invalid topic format: {t}. Skipping...")
                     continue
-                groups = regex.match(topic_format, t)
+                groups = regex.match(r"^\[(\d+)\] ([\w\s]+):(.+)", t)
                 lvl, name, desc = int(groups[1]), groups[2].strip(), groups[3].strip()
-
+                
                 if lvl != 1:
                     print(f"Lower level topics are not allowed: {t}. Skipping...")
                     continue
-                dups = topics_root.find_duplicates(name, lvl)
 
-                if (
-                    dups
-                ):  # Implement early stopping if no new topics are generated for a while
-                    dups[0].count += 1
-                    running_dups += 1
-                    if running_dups > early_stop:
-                        return responses, topics_list, topics_root
-                else:
-                    topics_root._add_node(lvl, name, 1, desc, topics_root.root)
-                    topics_list = topics_root.to_topic_list(desc=False, count=False)
-                    running_dups = 0
+                parsed_topics.append((lvl, name, desc))
 
             if verbose:
-                print(f"Topics: {response}")
+                print(f"Document {doc_index} topics: {response}")
                 print("--------------------")
-            responses.append(response)
-
+            
+            return doc_index, response, parsed_topics
+        
         except Exception as e:
-            traceback.print_exc()
-            responses.append("Error")
-            break
+            if verbose:
+                print(f"Error processing document {doc_index}: {e}")
+                traceback.print_exc()
+            return doc_index, "Error", []
+
+    responses = [None] * len(docs)
+    parsed_topics = [None] * len(docs)
+    running_dups = 0
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for batch_start in tqdm(range(0, len(docs), batch_size), desc="Generating Level1 Topics"):
+                batch_end = min(batch_start + batch_size, len(docs))
+                batch_docs = docs[batch_start:batch_end]
+
+                futures = [
+                    executor.submit(process_single_doc, i, doc, generation_prompt, api_client, seed_file, topics_list, context_len, temperature, max_tokens, top_p, verbose)
+                    for i, doc in enumerate(batch_docs, start=batch_start)
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    i, response, topics = future.result()
+                    responses[i] = response
+                    parsed_topics[i] = topics
+                    for t in topics:
+                        lvl, name, desc = t
+                        dups = topics_root.find_duplicates(name, lvl)
+
+                        if dups:
+                            dups[0].count += 1
+                            running_dups += 1
+                            if running_dups > early_stop:
+                                return responses, topics_list, topics_root
+                        else:
+                            topics_root._add_node(lvl, name, 1, desc, topics_root.root)
+                            topics_list = topics_root.to_topic_list(desc=False, count=False)
+                            running_dups = 0
+    except Exception as e:
+        traceback.print_exc()
+        return responses, topics_list, topics_root
 
     return responses, topics_list, topics_root
 
 
 def generate_topic_lvl1(
-    api, model, data, prompt_file, seed_file, out_file, topic_file, verbose
+    api, model, data, prompt_file, seed_file, out_file, topic_file, verbose, api_key=None, use_basic_auth=False, max_workers=8, batch_size=8
 ):
     """
     Generate high-level topics
@@ -169,7 +200,7 @@ def generate_topic_lvl1(
     Returns:
     - topics_root (TopicTree): Root node of the topic tree
     """
-    api_client = APIClient(api=api, model=model)
+    api_client = APIClient(api=api, model=model, api_key=api_key, use_basic_auth=use_basic_auth)
     max_tokens, temperature, top_p = 1000, 0.0, 1.0
 
     if verbose:
@@ -211,6 +242,8 @@ def generate_topic_lvl1(
         max_tokens,
         top_p,
         verbose,
+        max_workers=max_workers,
+        batch_size=batch_size,
     )
 
     # Save generated topics

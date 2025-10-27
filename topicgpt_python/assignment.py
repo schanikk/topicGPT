@@ -1,9 +1,12 @@
+import concurrent
+import concurrent.futures
+import threading
 import pandas as pd
 from topicgpt_python.utils import *
 
 import openai
 import numpy as np
-from tqdm import trange
+from tqdm import tqdm, trange
 import traceback
 import random
 from sentence_transformers import SentenceTransformer, util
@@ -11,7 +14,7 @@ import argparse
 import os
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-sbert = SentenceTransformer("all-MiniLM-L6-v2")
+sbert = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 
 
 def assignment(
@@ -24,6 +27,7 @@ def assignment(
     top_p,
     max_tokens,
     verbose,
+    max_workers=8,
 ):
     """
     Return documents with topics assigned to them
@@ -43,21 +47,19 @@ def assignment(
     - res: list of responses
     """
     tree_str = "\n".join(topics_root.to_topic_list(desc=True, count=False))
-    prompted_docs, res = [], []
 
-    for i in trange(len(docs)):
-        doc = docs[i]
-        cos_sim = {}
+    sema = threading.Semaphore(max_workers)
+    
+    def _worker(idx_doc):
+        i, doc = idx_doc
+
         doc_emb = sbert.encode(doc, convert_to_tensor=True)
-
-        # Include only most relevant topics such that the total length
-        # of tree_str is less than max_top_len
         if api_client.estimate_token_count(tree_str) > context_len:
-            for top in tree_str.split("\n"):
-                top_emb = sbert.encode(top, convert_to_tensor=True)
-                cos_sim[top] = util.cos_sim(top_emb, doc_emb)
+            cos_sim = {
+                top: util.cos_sim(sbert.encode(top, convert_to_tensor=True), doc_emb).item()
+                for top in tree_str.split("\n")
+            }
             top_top = sorted(cos_sim, key=cos_sim.get, reverse=True)
-
             seed_len = 0
             seed_str = ""
             while seed_len < context_len and len(top_top) > 0:
@@ -70,7 +72,6 @@ def assignment(
                     seed_len += (
                         token_count  # Update only with the new topic's token count
                     )
-
         else:
             seed_str = tree_str
 
@@ -86,23 +87,36 @@ def assignment(
             )
             doc = api_client.truncating(doc, max_doc_len)
 
+        prompt = assignment_prompt.format(Document=doc, tree=seed_str)
+
         try:
-            prompt = assignment_prompt.format(Document=doc, tree=seed_str)
-            response = api_client.iterative_prompt(
-                prompt, max_tokens, temperature, top_p=top_p, verbose=verbose
-            )
-            res.append(response)
+            with sema:
+                response = api_client.iterative_prompt(
+                    prompt, max_tokens, temperature, top_p=top_p, verbose=verbose
+                )
         except Exception as e:
             response = "Error"
-            res.append("Error")
             traceback.print_exc()
 
         if verbose:
             print(f"Response: {response}")
             print("--------------------")
-        prompted_docs.append(doc)
-    return res, prompted_docs
 
+        return i, doc, response
+
+    prompted_docs = [None] * len(docs)
+    res = [None] * len(docs)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor, \
+        tqdm(total=len(docs), desc="Processing documents") as pbar:
+        futures = [executor.submit(_worker, (i, doc)) for i, doc in enumerate(docs)]
+
+        for fut in concurrent.futures.as_completed(futures):
+            i, doc, resp = fut.result()
+            prompted_docs[i] = doc
+            res[i] = resp
+            pbar.update()
+    return res, prompted_docs
 
 def assignment_batch(
     api_client,
@@ -185,7 +199,7 @@ def assignment_batch(
     return responses, prompted_docs
 
 
-def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose):
+def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose, api_key=None, use_basic_auth=False, max_workers=8):
     """
     Assign topics to a list of documents
 
@@ -198,7 +212,7 @@ def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose):
     - topic_file (str): File to write topics to
     - verbose (bool): Whether to print out results
     """
-    api_client = APIClient(api=api, model=model)
+    api_client = APIClient(api=api, model=model, api_key=api_key, use_basic_auth=use_basic_auth)
     max_tokens, temperature, top_p = 1000, 0.0, 1.0
 
     if verbose:
@@ -249,6 +263,7 @@ def assign_topics(api, model, data, prompt_file, out_file, topic_file, verbose):
             top_p,
             max_tokens,
             verbose,
+            max_workers=max_workers,
         )
 
     # Writing results ----

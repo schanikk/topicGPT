@@ -7,7 +7,9 @@ verbose: True
 # data_sample: input file (.jsonl format)
 # content: each file should have a text, and optionally id and label columns
 # ----------------- 
-data_sample: "data/input/sample.jsonl"
+data_sample: "data/input/data_generation.jsonl"
+model: "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"
+connection: "remote"
 
 # --- Generation ---
 # prompt: prompt to generate 1st-level topics
@@ -63,3 +65,9 @@ assignment:
 correction:
   prompt: "prompt/correction.txt"
   output: "data/output/sample/assignment_corrected.jsonl"
+
+# --- Representation --
+# output: output of topic representation
+# ------------------
+representation:
+  output: "data/output/sample/representation.jsonl"
