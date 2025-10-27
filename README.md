@@ -1,3 +1,14 @@
+## Personalized Fork
+- Implemented **C-TF-IDF** representation on final words
+   - Implementation is based on Marteen Grootendorst (https://github.com/MaartenGr/cTFIDF), aka BERTopic
+- Added **Topic Coherence** and **Topic Diversity** Metrics
+   - Based on https://github.com/silviatti/topic-model-diversity/tree/master
+- Implemented Parallel Assignment and Correction of topics to documents using Multithreading
+- Added **Remote API Compatibility** (OpenAI Compatible APIs) to use Universities' Inference Endpoints.
+
+**ALL CREDITS TO THE ORIGINAL AUTHORS OF TOPICGPT(https://github.com/chtmp223/topicGPT)**
+
+
 # TopicGPT
 [![arXiV](https://img.shields.io/badge/arxiv-link-red)](https://arxiv.org/abs/2311.01449) [![Website](https://img.shields.io/badge/website-link-purple)](https://chtmp223.github.io/topicGPT) 
 
@@ -10,16 +21,6 @@ This repository contains scripts and prompts for our paper ["TopicGPT: Topic Mod
 
 ![TopicGPT Pipeline Overview](assets/img/pipeline.png)
 
-
-## Personalized Fork
-- Implemented **C-TF-IDF** representation on final words
-   - Implementation is based on Marteen Grootendorst (https://github.com/MaartenGr/cTFIDF), aka BERTopic
-- Added **Topic Coherence** and **Topic Diversity** Metrics
-   - Based on https://github.com/silviatti/topic-model-diversity/tree/master
-- Implemented Parallel Assignment and Correction of topics to documents using Multithreading
-- Added **Remote API Compatibility** (OpenAI Compatible APIs) to use Universities' Inference Endpoints.
-
-**ALL CREDITS TO THE ORIGINAL AUTHORS OF TOPICGPT(https://github.com/chtmp223/topicGPT)**
 
 ## 📣 Updates
 - [11/09/24] Python package `topicgpt_python` is released! You can install it via `pip install topicgpt_python`. We support OpenAI API, VertexAI, Azure API, Gemini API, and vLLM (requires GPUs for inference). See [PyPI](https://pypi.org/project/topicgpt-python/).
